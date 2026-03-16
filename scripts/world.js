@@ -1,10 +1,9 @@
 import * as THREE from "three";
 import { SimplexNoise } from "three/addons/math/SimplexNoise.js";
 import { RNG } from "./rng";
-import { blocks } from "./blocks";
+import { blocks, resources } from "./blocks";
 
 const geometry = new THREE.BoxGeometry();
-const material = new THREE.MeshLambertMaterial();
 const matrix = new THREE.Matrix4();
 
 export class World extends THREE.Group {
@@ -31,8 +30,10 @@ export class World extends THREE.Group {
   }
 
   generate() {
+    const rng = new RNG(this.params.seed);
     this.initTerrain();
-    this.generateTerrain();
+    this.generateResources(rng);
+    this.generateTerrain(rng);
     this.generateMeshes();
   }
 
@@ -54,8 +55,7 @@ export class World extends THREE.Group {
     }
   }
 
-  generateTerrain() {
-    const rng = new RNG(this.params.seed);
+  generateTerrain(rng) {
     const simplex = new SimplexNoise(rng);
     for (let i = 0; i < this.size.width; i++) {
       for (let k = 0; k < this.size.width; k++) {
@@ -71,11 +71,11 @@ export class World extends THREE.Group {
         height = Math.max(0, Math.min(height, this.size.height - 1));
 
         for (let j = 0; j <= this.size.height; j++) {
-          if (j <= height) {
+          if (j <= height && this.getBlock(i, j, k).id === blocks.empty.id) {
             this.setBlockId(i, j, k, blocks.dirt.id);
           } else if (j === height + 1) {
             this.setBlockId(i, j, k, blocks.grass.id);
-          } else {
+          } else if (j > height + 1) {
             this.setBlockId(i, j, k, blocks.empty.id);
           }
         }
@@ -83,32 +83,67 @@ export class World extends THREE.Group {
     }
   }
 
+  generateResources(rng) {
+    const simplex = new SimplexNoise(rng);
+    resources.forEach((resource) => {
+      for (let i = 0; i < this.size.width; i++) {
+        for (let j = 0; j < this.size.height; j++) {
+          for (let k = 0; k < this.size.width; k++) {
+            const val = simplex.noise3d(
+              i / resource.scale.x,
+              j / resource.scale.y,
+              k / resource.scale.z,
+            );
+            if (val > resource.scarcity) {
+              this.setBlockId(i, j, k, resource.id);
+            }
+          }
+        }
+      }
+    });
+  }
+
   generateMeshes() {
     this.clear();
-    const mesh = new THREE.InstancedMesh(
-      geometry,
-      material,
-      this.size.width * this.size.height * this.size.width,
-    );
-    mesh.count = 0;
+    const maxCount = this.size.width * this.size.height * this.size.width;
+    const meshes = {};
+    Object.values(blocks)
+      .filter((blockType) => blockType.id !== 0)
+      .forEach((blockType) => {
+        const mesh = new THREE.InstancedMesh(
+          geometry,
+          blockType.material,
+          maxCount,
+        );
+        mesh.name = blockType.name;
+        mesh.count = 0;
+        meshes[blockType.id] = mesh;
+      });
+
+    // const mesh = new THREE.InstancedMesh(
+    //   geometry,
+    //   blockType.material,
+    //   this.size.width * this.size.height * this.size.width,
+    // );
+    // mesh.count = 0;
 
     for (let i = 0; i < this.size.width; i++) {
       for (let j = 0; j < this.size.height; j++) {
         for (let k = 0; k < this.size.width; k++) {
           const blockId = this.getBlock(i, j, k).id;
-          const blockType = Object.values(blocks).find((b) => b.id === blockId);
+          if (blockId === 0) continue;
+          const mesh = meshes[blockId];
           const instanceId = mesh.count;
           if (blockId !== 0 && !this.isBlockObscured(i, j, k)) {
             matrix.setPosition(i, j, k);
             mesh.setMatrixAt(instanceId, matrix);
-            mesh.setColorAt(instanceId, new THREE.Color(blockType.color));
             this.setInstanceId(i, j, k, instanceId);
             mesh.count++;
           }
         }
       }
     }
-    this.add(mesh);
+    this.add(...Object.values(meshes));
   }
 
   setInstanceId(x, y, z, id) {
